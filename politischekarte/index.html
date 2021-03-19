@@ -1,0 +1,987 @@
+<html><head>
+<title>Physische Weltkarte</title>
+<meta http-equiv="content-type" content="text/html; charset=windows-1252">
+
+<script type="text/javascript" src="js/glMatrix-0.js"></script>
+<script type="text/javascript" src="js/webgl-utils.js"></script>
+<script type="text/javascript" src="js/TextureSphere.js"></script>
+<script type="text/javascript" src="js/Circle.js"></script>
+<script type="text/javascript" src="js/ClassStarfield.js"></script>
+<script type="text/javascript" src="js/getShaders.js"></script>
+
+<script type="text/javascript" src="js/shader/TextureShader3D_Vert.js"></script>
+<script type="text/javascript" src="js/shader/TextureShader3D_Frag.js"></script>
+<script type="text/javascript" src="js/shader/ColorShader2D_Vert.js"></script>
+<script type="text/javascript" src="js/shader/ColorShader2D_Frag.js"></script>
+<script type="text/javascript" src="js/shader/ColorShader3D_Vert.js"></script>
+<script type="text/javascript" src="js/shader/ColorShader3D_Frag.js"></script>
+
+<script type="text/javascript">
+
+// https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events/Pinch_zoom_gestures
+
+//---------------------------------------------------------------------------
+//
+// Globale Variablen
+//
+//---------------------------------------------------------------------------
+
+var gl;
+
+var mouseDown = false;
+var lastMouseX = null;
+var lastMouseY = null;
+
+var shaderProgram3d;
+var shaderProgram2d;
+var shaderProgram3dColor;
+
+var mvMatrix = mat4.create();
+var mvMatrixStack = [];
+var pMatrix = mat4.create();
+
+var erde;
+var nordpol;
+var starfield;
+var npol;
+var spol;
+
+var xrot = 0;
+var yrot = 0;
+var zoom = 0.6;
+var zoomIn  = false;
+var zoomOut = false;
+var translateUp    = false;
+var translateDown  = false;
+var translateLeft  = false;
+var translateRight = false;
+var translateHori = 0.0;
+var translateVert = 0.0;
+var TextAlpha = 1.0;
+var TextAlphaFade = 500.0;
+var t_offset = 0.004;
+var zoomActive = false;
+
+var autorotate = 0;
+
+var GlobalCanvas;
+var GlobalCanvasText;
+
+var evCache = new Array();
+var prevDiff = -1;
+
+//---------------------------------------------------------------------------
+//
+//
+//
+//---------------------------------------------------------------------------
+
+window.onresize = function()
+{
+    GlobalCanvas.width  = window.innerWidth - 16;
+    GlobalCanvas.height = window.innerHeight - 16;
+
+    gl.viewportWidth  = GlobalCanvas.width;
+    gl.viewportHeight = GlobalCanvas.height;
+
+    Aspect = parseFloat(GlobalCanvas.height) / GlobalCanvas.width;
+
+    gl.viewport(0, 0, GlobalCanvas.width, GlobalCanvas.height);
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    initGL
+//
+//
+//---------------------------------------------------------------------------
+
+function initGL(canvas)
+{
+    try
+    {
+        //gl = canvas.getContext("experimental-webgl");
+        gl = canvas.getContext("webgl",{alpha:true,antialias:false});
+
+        gl.getExtension('GL_OES_standard_derivatives');
+        gl.getExtension('OES_standard_derivatives');
+
+
+        console.log(gl.getParameter(gl.VERSION));
+        console.log(gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+        console.log(gl.getParameter(gl.VENDOR));
+
+
+        //gl.viewportWidth  = canvas.width;
+        //gl.viewportHeight = canvas.height;
+
+
+        canvas.width  = document.body.clientWidth;;
+        canvas.height = document.body.clientHeight;
+
+        gl.viewportWidth  = canvas.width;
+        gl.viewportHeight = canvas.height;
+
+        Aspect = parseFloat(canvas.height) / canvas.width;
+        if (Aspect > 1.0)
+        {
+        	zoom *= Aspect;
+        }
+
+        gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+    catch (e)
+    {
+    }
+
+    if (!gl)
+    {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+
+/*
+//---------------------------------------------------------------------------
+//
+// function:    initGL
+//
+//
+//---------------------------------------------------------------------------
+
+function initGL(canvas)
+{
+    try
+    {
+        gl = canvas.getContext("experimental-webgl");
+        gl.viewportWidth  = canvas.width;
+        gl.viewportHeight = canvas.height;
+    }
+    catch (e)
+    {
+    }
+
+    if (!gl)
+    {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+*/
+
+//---------------------------------------------------------------------------
+//
+// function:    getShader
+//
+//
+//---------------------------------------------------------------------------
+
+function getShader(gl, id)
+{
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript)
+    {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k)
+    {
+        if (k.nodeType == 3)
+        {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+
+    var shader;
+    if (shaderScript.type == "x-shader/x-fragment")
+    {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+    }
+    else
+    if (shaderScript.type == "x-shader/x-vertex")
+    {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+    }
+    else
+    {
+        return null;
+    }
+
+    gl.shaderSource(shader, str);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+    {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+    }
+
+    return shader;
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    initShaders
+//
+//---------------------------------------------------------------------------
+
+function initShaders3d()
+{
+    //
+    // 3D Shader
+    //
+
+    var vertexShader   = getVertShader(gl, TextureShader3D_Vert);
+    var fragmentShader = getFragShader(gl, TextureShader3D_Frag);
+
+    shaderProgram3d = gl.createProgram();
+    gl.attachShader(shaderProgram3d, vertexShader);
+    gl.attachShader(shaderProgram3d, fragmentShader);
+    gl.linkProgram(shaderProgram3d);
+
+    if (!gl.getProgramParameter(shaderProgram3d, gl.LINK_STATUS))
+    {
+        alert("Could not initialise shaders");
+    }
+
+    shaderProgram3d.vertexPositionAttribute = gl.getAttribLocation(shaderProgram3d, "aVertexPosition");
+    gl.enableVertexAttribArray(shaderProgram3d.vertexPositionAttribute);
+
+    shaderProgram3d.textureCoordAttribute = gl.getAttribLocation(shaderProgram3d, "aTextureCoord");
+    gl.enableVertexAttribArray(shaderProgram3d.textureCoordAttribute);
+
+
+    shaderProgram3d.vertexNormalAttribute = gl.getAttribLocation(shaderProgram3d, "aVertexNormal");
+    gl.enableVertexAttribArray(shaderProgram3d.vertexNormalAttribute);
+
+
+    shaderProgram3d.pMatrixUniform = gl.getUniformLocation(shaderProgram3d, "uPMatrix");
+    shaderProgram3d.mvMatrixUniform = gl.getUniformLocation(shaderProgram3d, "uMVMatrix");
+    shaderProgram3d.nMatrixUniform = gl.getUniformLocation(shaderProgram3d, "uNMatrix");
+    shaderProgram3d.samplerUniform = gl.getUniformLocation(shaderProgram3d, "uSampler");
+    shaderProgram3d.useLightingUniform = gl.getUniformLocation(shaderProgram3d, "uUseLighting");
+    shaderProgram3d.ambientColorUniform = gl.getUniformLocation(shaderProgram3d, "uAmbientColor");
+    shaderProgram3d.lightingDirectionUniform = gl.getUniformLocation(shaderProgram3d, "uLightingDirection");
+    shaderProgram3d.directionalColorUniform = gl.getUniformLocation(shaderProgram3d, "uDirectionalColor");
+
+    gl.useProgram(shaderProgram3d);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    initShaders3dColor
+//
+//---------------------------------------------------------------------------
+
+function initShaders3dColor()
+{
+    //
+    // 3D Shader
+    //
+
+    var vertexShader   = getVertShader(gl, ColorShader3D_Vert);
+    var fragmentShader = getFragShader(gl, ColorShader3D_Frag);
+
+    shaderProgram3dColor = gl.createProgram();
+    gl.attachShader(shaderProgram3dColor, vertexShader);
+    gl.attachShader(shaderProgram3dColor, fragmentShader);
+    gl.linkProgram(shaderProgram3dColor);
+
+    if (!gl.getProgramParameter(shaderProgram3dColor, gl.LINK_STATUS))
+    {
+        alert("Could not initialise shaders");
+    }
+
+    shaderProgram3dColor.vertexPositionAttribute = gl.getAttribLocation(shaderProgram3dColor, "aVertexPosition");
+    shaderProgram3dColor.vertexColorAttribute    = gl.getAttribLocation(shaderProgram3dColor, "aVertexColor");
+    shaderProgram3dColor.pointSizeAttribute      = gl.getAttribLocation(shaderProgram3dColor, "aPointSize");
+
+
+
+    shaderProgram3dColor.pMatrixUniform  = gl.getUniformLocation(shaderProgram3dColor, "uPMatrix");
+    shaderProgram3dColor.mvMatrixUniform = gl.getUniformLocation(shaderProgram3dColor, "uMVMatrix");
+    shaderProgram3dColor.nMatrixUniform  = gl.getUniformLocation(shaderProgram3dColor, "uNMatrix");
+
+    gl.useProgram(shaderProgram3dColor);
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    UseShader3D
+//
+//
+//---------------------------------------------------------------------------
+
+function UseShader3D()
+{
+    gl.useProgram(shaderProgram3d);
+    gl.enableVertexAttribArray(shaderProgram3d.vertexPositionAttribute);
+    gl.enableVertexAttribArray(shaderProgram3d.textureCoordAttribute);
+    gl.enableVertexAttribArray(shaderProgram3d.vertexNormalAttribute);
+
+}
+
+function UseShader3DColor()
+{
+    gl.disableVertexAttribArray(shaderProgram3d.vertexPositionAttribute);
+    gl.disableVertexAttribArray(shaderProgram3d.textureCoordAttribute);
+    gl.disableVertexAttribArray(shaderProgram3d.vertexNormalAttribute);
+
+    gl.useProgram(shaderProgram3dColor);
+    gl.enableVertexAttribArray(shaderProgram3dColor.vertexPositionAttribute);
+    gl.enableVertexAttribArray(shaderProgram3dColor.vertexColorAttribute);
+    gl.enableVertexAttribArray(shaderProgram3dColor.pointSizeAttribute);
+}
+
+
+function DisableShader3DColor()
+{
+    gl.disableVertexAttribArray(shaderProgram3dColor.vertexPositionAttribute);
+    gl.disableVertexAttribArray(shaderProgram3dColor.vertexColorAttribute);
+    gl.disableVertexAttribArray(shaderProgram3dColor.pointSizeAttribute);
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    UseShader2D
+//
+//
+//---------------------------------------------------------------------------
+
+function UseShader2D()
+{
+    gl.enableVertexAttribArray(shaderProgram2d.vertexPositionAttribute);
+    gl.enableVertexAttribArray(shaderProgram2d.vertexColorAttribute);
+    gl.useProgram(shaderProgram2d);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    initShaders2d
+//
+//
+//---------------------------------------------------------------------------
+
+function initShaders2d()
+{
+    var fragmentShader = getShader(gl, ColorShader2D_Frag);
+    var vertexShader   = getShader(gl, ColorShader2D_Vert);
+
+    shaderProgram2d = gl.createProgram();
+    gl.attachShader(shaderProgram2d, vertexShader);
+    gl.attachShader(shaderProgram2d, fragmentShader);
+    gl.linkProgram(shaderProgram2d);
+
+    if (!gl.getProgramParameter(shaderProgram2d, gl.LINK_STATUS))
+    {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(shaderProgram2d);
+
+    shaderProgram2d.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+    gl.enableVertexAttribArray(shaderProgram2d.vertexPositionAttribute);
+
+    shaderProgram2d.vertexColorAttribute = gl.getAttribLocation(shaderProgram2d, "aVertexColor");
+    gl.enableVertexAttribArray(shaderProgram2d.vertexColorAttribute);
+
+    shaderProgram2d.pMatrixUniform = gl.getUniformLocation(shaderProgram2d, "uPMatrix");
+    shaderProgram2d.mvMatrixUniform = gl.getUniformLocation(shaderProgram2d, "uMVMatrix");
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    handleLoadedTexture
+//
+//
+//---------------------------------------------------------------------------
+
+function handleLoadedTexture(Texture)
+{
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.bindTexture(gl.TEXTURE_2D, Texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, Texture.image);
+    //gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    //gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    
+    //gl.generateMipmap(gl.TEXTURE_2D);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    mvPushMatrix
+//
+//
+//---------------------------------------------------------------------------
+
+
+function mvPushMatrix()
+{
+    var copy = mat4.create();
+    mat4.set(mvMatrix, copy);
+    mvMatrixStack.push(copy);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    mvPopMatrix
+//
+//
+//---------------------------------------------------------------------------
+
+function mvPopMatrix()
+{
+    if (mvMatrixStack.length == 0)
+    {
+      throw "Invalid popMatrix!";
+    }
+    mvMatrix = mvMatrixStack.pop();
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    setMatrixUniforms
+//
+//
+//---------------------------------------------------------------------------
+
+function setMatrixUniforms()
+{
+    gl.uniformMatrix4fv(shaderProgram3d.pMatrixUniform, false, pMatrix);
+    gl.uniformMatrix4fv(shaderProgram3d.mvMatrixUniform, false, mvMatrix);
+
+    var normalMatrix = mat3.create();
+    mat4.toInverseMat3(mvMatrix, normalMatrix);
+    mat3.transpose(normalMatrix);
+    gl.uniformMatrix3fv(shaderProgram3d.nMatrixUniform, false, normalMatrix);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    degToRad
+//
+//
+//---------------------------------------------------------------------------
+
+function degToRad(degrees)
+{
+    return degrees * Math.PI / 180;
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    handleMouseDown
+//
+//
+//---------------------------------------------------------------------------
+
+function handleMouseDown(event)
+{
+    mouseDown = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    handleMouseUp
+//
+//
+//---------------------------------------------------------------------------
+
+function handleMouseUp(event)
+{
+  mouseDown = false;
+}
+
+function handleWheelEvent(event)
+{
+    console.log("event.wheelDelta=" + event.deltaY);
+    zoom *= 1.0 + (event.deltaY / 100);
+}
+
+
+function handleKeypressEvent(event)
+{
+    console.log("handleKeypressEvent=" + event.key);
+    if (event.key == "s")
+    {
+        zoomIn = true;
+    }
+    if (event.key == "w")
+    {
+        zoomOut = true;
+    }
+    if (event.keyCode == 0x28) // Arrow down
+    {
+        //translateUp = true;
+        zoomIn = true;
+    }
+    if (event.keyCode == 0x26) // Arrow up
+    {
+        //translateDown = true;
+        zoomOut = true;
+    }
+    if (event.keyCode == 0x25) // Arrow left
+    {
+        translateLeft = true;
+    }
+    if (event.keyCode == 0x27) // Arrow right
+    {
+        translateRight = true;
+    }
+}
+
+function handleReleaseEvent(event)
+{
+    console.log("handleReleaseEvent=" + event.key);
+    if (event.key == "s")
+    {
+        zoomIn = false;
+    }
+    if (event.key == "w")
+    {
+        zoomOut = false;
+    }
+    if (event.keyCode == 0x28) // Arrow down
+    {
+        //translateUp = true;
+        zoomIn = false;
+    }
+    if (event.keyCode == 0x26) // Arrow up
+    {
+        //translateDown = true;
+        zoomOut = false;
+    }
+    
+    
+    zoomIn = false;
+    zoomOut = false;
+
+    translateDown  = false;
+    translateUp    = false;
+    translateLeft  = false;
+    translateRight = false;
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    handleMouseMove
+//
+//
+//---------------------------------------------------------------------------
+
+function handleMouseMove(event)
+{
+    if (!mouseDown)
+    {
+       return;
+    }
+
+	if (!zoomActive)
+	{
+	    var newX = event.clientX;
+	    var newY = event.clientY;
+
+	    var deltaX = newX - lastMouseX
+	    var deltaY = newY - lastMouseY;
+
+	    xrot += degToRad(deltaX / 5) * zoom;
+	    yrot += degToRad(deltaY / 5) * zoom;
+
+	    lastMouseX = newX
+	    lastMouseY = newY;
+	}
+}
+
+//---------------------------------------------------------------------------
+//
+//
+//
+//---------------------------------------------------------------------------
+
+window.onresize = function()
+{
+    GlobalCanvas.width  = window.innerWidth - 16;
+    GlobalCanvas.height = window.innerHeight - 16;
+
+    gl.viewportWidth  = GlobalCanvas.width;
+    gl.viewportHeight = GlobalCanvas.height;
+
+    Aspect = parseFloat(GlobalCanvas.height) / GlobalCanvas.width;
+
+    gl.viewport(0, 0, GlobalCanvas.width, GlobalCanvas.height);
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    drawStarField
+//
+//---------------------------------------------------------------------------
+
+function drawStarField()
+{
+    UseShader3DColor();
+    gl.uniformMatrix4fv(shaderProgram3dColor.pMatrixUniform, false, pMatrix);
+    gl.uniformMatrix4fv(shaderProgram3dColor.mvMatrixUniform, false, mvMatrix);
+    starfield.drawStarfield();
+    DisableShader3DColor();
+    UseShader3D();
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    drawText
+//
+//---------------------------------------------------------------------------
+
+function drawText()
+{
+
+
+    if (TextAlpha > 0.0)
+    {
+        var fillStyle = `rgba(200.0, 200.0, 200.0, ${TextAlpha})`;
+        var ctx = GlobalCanvasText.getContext('2d');
+        ctx.clearRect(0, 0, GlobalCanvasText.width, GlobalCanvasText.height);
+
+        var t1 =
+        [
+        "The chief purpose of the 5M scale map is to summarize the current state of luna",
+        "geologic knowledge. Like terrestrial synoptic maps it provides a stratigraphic",
+        "framework to be used for developing new theory and for determining the regional",
+        "significance of surface exploration results.",
+        "In addition to serving as a framework for interpreting surface exploration",
+        "results, the effort to classify units into type and age by photogeology narrows",
+        "the range of possible origins for many features.",
+        ];
+
+        ctx.font = '48px serif';
+        ctx.fillStyle = fillStyle;
+        ctx.fillText('Unified Geologic Map of the Moon', 100, 160);
+
+        ctx.font = '16px serif';
+        ctx.fillStyle = fillStyle;
+
+        var y = 190;
+        for (i = 0; i < 7; i++)
+        {
+            ctx.fillText(t1[i], 100, y);
+            y += 20;
+        }
+
+        ctx.font = '20px serif';
+        ctx.fillStyle = fillStyle;
+        ctx.fillText('https://astrogeology.usgs.gov/search/map/Moon/Geology/Unified_Geologic_Map_of_the_Moon_GIS', 100, y + 20);
+
+        if (TextAlphaFade > 0)
+        {
+            TextAlphaFade--;
+        }
+        else
+        {
+            TextAlpha -= 0.005;
+        }
+    }
+}
+
+
+//---------------------------------------------------------------------------
+//
+// function:    drawScene
+//
+//
+//---------------------------------------------------------------------------
+
+function drawScene()
+{
+
+    UseShader3D();
+    gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+    var lighting = true; //document.getElementById("lighting").checked;
+    gl.uniform1i(shaderProgram3d.useLightingUniform, lighting);
+    if (lighting)
+    {
+        gl.uniform3f(shaderProgram3d.ambientColorUniform, 0.2, 0.2, 0.2);
+        var lightingDirection =
+        [
+          -1.0, 0.0, -1.0
+        ];
+        var adjustedLD = vec3.create();
+        vec3.normalize(lightingDirection, adjustedLD);
+        vec3.scale(adjustedLD, -1);
+        gl.uniform3fv(shaderProgram3d.lightingDirectionUniform, adjustedLD);
+
+        gl.uniform3f(shaderProgram3d.directionalColorUniform, 1.0, 1.0, 1.0);
+    }
+
+    mat4.identity(mvMatrix);
+    mat4.translate(mvMatrix, [translateHori, translateVert, -10 * zoom]);
+    mat4.rotate(mvMatrix, yrot, [1, 0, 0]);
+    mat4.rotate(mvMatrix, xrot + autorotate, [0, 1, 0]);
+
+    drawStarField();
+
+    setMatrixUniforms();
+    //npol.drawTextureSphere();
+    //spol.drawTextureSphere();
+    erde.drawTextureSphere();
+    nordpol.drawTextureSphere();
+    
+    mat4.ortho(0, gl.viewportWidth, 0, gl.viewportHeight, -1.0, 1.0, mvMatrix);
+
+    //drawText();
+
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    tick
+//
+//
+//---------------------------------------------------------------------------
+
+function tick()
+{
+    if (zoomIn)  zoom *= 1.01;
+    if (zoomOut) zoom /= 1.01;
+
+    if (translateLeft)  translateHori -= 0.01;
+    if (translateRight) translateHori += 0.01;
+    if (translateUp)    translateVert += 0.01;
+    if (translateDown)  translateVert -= 0.01;
+
+    autorotate += degToRad(0.02);
+
+    requestAnimFrame(tick);
+    drawScene();
+}
+
+
+function eventMouseMove(newX, newY)
+{
+	if (!zoomActive)
+	{
+		var deltaX = newX - lastMouseX
+		var deltaY = newY - lastMouseY;
+		xrot += degToRad(deltaX / 5) * zoom;
+		yrot += degToRad(deltaY / 5) * zoom;
+		lastMouseX = newX
+		lastMouseY = newY;
+	}
+}
+
+function touchStart(event)
+{
+	var targetEvent =  event.touches.item(0);
+	lastMouseX = targetEvent.clientX;
+	lastMouseY = targetEvent.clientY;
+	event.preventDefault();
+	return false;
+}
+
+
+function TouchEventFunction(event)
+{
+	var targetEvent = event.touches.item(0);
+	eventMouseMove(targetEvent.clientX, targetEvent.clientY);
+}
+
+function vectorDist(x1, y1, x2, y2)
+{
+	var dx = x1 - x2;
+	var dy = y1 - y2;
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+function pointermove_handler(ev)
+{
+ // This function implements a 2-pointer horizontal pinch/zoom gesture.
+ //
+ // If the distance between the two pointers has increased (zoom in),
+ // the target element's background is changed to "pink" and if the
+ // distance is decreasing (zoom out), the color is changed to "lightblue".
+ //
+ // This function sets the target element's border to "dashed" to visually
+ // indicate the pointer's target received a move event.
+
+ ev.target.style.border = "dashed";
+
+ // Find this event in the cache and update its record with this event
+ for (var i = 0; i < evCache.length; i++)
+ {
+   if (ev.pointerId == evCache[i].pointerId)
+   {
+      evCache[i] = ev;
+   	  break;
+   }
+ }
+
+ // If two pointers are down, check for pinch gestures
+ if (evCache.length == 2)
+ {
+   // Calculate the distance between the two pointers
+
+   var curDiff = vectorDist(evCache[0].clientX, evCache[0].clientY, evCache[1].clientX, evCache[1].clientY);
+
+   //Math.abs(evCache[0].clientX * evCache[0].clientX- evCache[1].clientX);
+   zoomActive = true;
+
+   if (prevDiff > 0)
+   {
+     if (curDiff > prevDiff)
+     {
+       // The distance between the two pointers has increased
+       if (zoom > 0.5)
+       {
+       	zoom /= 1.015;
+       }
+     }
+     if (curDiff < prevDiff)
+     {
+
+       // The distance between the two pointers has decreased
+       if (zoom < 100.0)
+       {
+       	zoom *= 1.015;
+       }
+
+     }
+   }
+
+   // Cache the distance for the next move event
+   prevDiff = curDiff;
+ }
+}
+
+
+function pointerdown_handler(ev)
+{
+	// The pointerdown event signals the start of a touch interaction.
+	// This event is cached to support 2-finger gestures
+	evCache.push(ev);
+}
+
+function remove_event(ev)
+{
+	// Remove this event from the target's cache
+	for (var i = 0; i < evCache.length; i++)
+	{
+		if (evCache[i].pointerId == ev.pointerId)
+		{
+			evCache.splice(i, 1);
+			break;
+		}
+	}
+}
+
+function pointerup_handler(ev)
+{
+  // Remove this pointer from the cache and reset the target's
+  // background and border
+  remove_event(ev);
+  // If the number of pointers down is less than two then reset diff tracker
+  if (evCache.length < 2)
+  {
+  	prevDiff = -1;
+  }
+  if (evCache.length == 0)
+  {
+  	zoomActive = false;
+  }
+}
+
+//---------------------------------------------------------------------------
+//
+// function:    webGLStart
+//
+//
+//---------------------------------------------------------------------------
+
+function webGLStart()
+{
+    GlobalCanvas = document.getElementById("glCanvas");
+
+    /*
+    GlobalCanvasText = document.getElementById('textCanvas');
+    GlobalCanvasText.width  = document.body.clientWidth;
+    GlobalCanvasText.height = document.body.clientHeight;
+    */
+
+    initGL(GlobalCanvas);
+    initShaders3d();
+    initShaders3dColor();
+    
+    erde = new TextureSphere(2.0, "weltkarte-politisch.png");
+    erde.initBuffers(83.64513, -90.0);    
+    erde.initTexture();
+    
+    nordpol = new TextureSphere(2.0, "nordpol.png");
+    nordpol.initBuffersPoleTexture(83.64513, 90.0, true);
+    nordpol.initTexture();
+
+    starfield = new ClassStarfield(10000);
+    starfield.initBuffers();
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.enable(gl.DEPTH_TEST);
+
+    GlobalCanvas.onmousedown   = handleMouseDown;
+    document.onmouseup   = handleMouseUp;
+    document.onmousemove = handleMouseMove;
+    document.onkeydown   = handleKeypressEvent;
+    document.onkeyup     = handleReleaseEvent;
+
+    GlobalCanvas.addEventListener('mousemove', handleMouseMove);
+    GlobalCanvas.ontouchstart = touchStart;
+    GlobalCanvas.ontouchmove = TouchEventFunction;
+
+	GlobalCanvas.onpointerdown = pointerdown_handler;
+ 	GlobalCanvas.onpointermove = pointermove_handler;
+ 	GlobalCanvas.onpointerup   = pointerup_handler;
+
+
+
+    //document.wheel       = handleWheelEvent;
+
+    tick();
+}
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();" bgcolor="#000000">
+
+    <script>
+    window.addEventListener("wheel", handleWheelEvent, false);
+    </script>
+
+
+    <div style="width: 100%; height: 100%; position:fixed">
+      <canvas id="glCanvas" style="border: none;"></canvas>
+    </div>
+    <!--
+    <div style="width: 100%; height: 100%; position:fixed">
+      <canvas id="textCanvas" width="1024" height="1024"></canvas>
+    </div>
+    -->
+
+
+</center></body></html>
