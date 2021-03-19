@@ -1,7 +1,7 @@
 #!/bin/sh
 
-MAP_WIDTH=8192
-MAP_HEIGHT=4096
+MAP_WIDTH=4096
+MAP_HEIGHT=2048
 #
 # Karte erzeugen
 #
@@ -27,5 +27,7 @@ convert world.tif world.png
 ../colormapper/build/colormapper world.png weltkarte-politisch.png
 
 #
+# aufräumen:
 #
-#
+rm world.tif world.png
+
